@@ -48,15 +48,23 @@ Open [.env](file:///home/joa/.gemini/tinfoil-proxy/.env) to configure your envir
 - `SYSTEM_PROMPT`: Instructions for the AI persona
 - `CHAT_LOGS`: Set to `true` to save your conversations locally
 
-### Step 2 — Start the CLI Chat
+### Step 2 — Install Dependencies
 
 ```bash
-cd ~/.gemini/tinfoil-proxy && npm start
+cd ~/.gemini/tinfoil-proxy && npm install
+```
+
+This will install the Tinfoil SDK, dotenv, and all other required packages listed in `package.json`.
+
+### Step 3 — Start the CLI Chat
+
+```bash
+npm start
 ```
 
 That's it! The script will verify the secure AMD enclave, prompt you for an encryption password (if logs are enabled), perform the cryptographic handshake, and drop you into a secure interactive `You:` prompt.
 
-### Step 3 — Resuming a Chat (Encrypted History)
+### Step 4 — Resuming a Chat (Encrypted History)
 
 If you have `CHAT_LOGS=true`, every turn of your conversation is saved in an AES-256-GCM encrypted [.json](file:///home/joa/.gemini/tinfoil-proxy/package.json) file inside the `./logs/` folder.
 
@@ -66,6 +74,16 @@ To securely resume a previous chat with full AI memory, just pass the file path 
 npm start -- ./logs/chat_2026-03-13.json
 ```
 The script will ask for your decryption password, load the history, and you can continue chatting exactly where you left off.
+
+### Step 5 — Encrypting Existing Logs (`--encrypt`)
+
+If you previously used plaintext chat logs (or migrated from another chat tool), you can encrypt all existing log files in `./logs/` at once:
+
+```bash
+npm start -- --encrypt
+```
+
+This will scan the `./logs/` directory, skip any files that are already encrypted, and re-write every plaintext `.json` or `.jsonl` log using AES-256-GCM encryption. You will be prompted for a password to use for encryption. Legacy `.jsonl` files are automatically converted to `.json` during the process.
 
 ## Verification
 
