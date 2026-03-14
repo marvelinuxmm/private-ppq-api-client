@@ -64,7 +64,7 @@ function encryptLog(text: string): Buffer {
   if (!logPassword) return Buffer.from(text, "utf-8"); // fallback if plaintext
   const iv = crypto.randomBytes(12);
   const salt = crypto.randomBytes(16);
-  const key = crypto.pbkdf2Sync(logPassword, salt, 100000, 32, "sha256");
+  const key = crypto.pbkdf2Sync(logPassword, salt, 600000, 32, "sha256");
   const cipher = crypto.createCipheriv(ALGO, key, iv);
   const encrypted = Buffer.concat([cipher.update(text, "utf-8"), cipher.final()]);
   const authTag = cipher.getAuthTag();
@@ -82,15 +82,19 @@ export function decryptLog(buffer: Buffer): string {
     throw new Error("Log file is encrypted, but no log password was provided!");
   }
   try {
+    // Minimum size: 4 (magic) + 16 (salt) + 12 (iv) + 16 (authTag) = 48 bytes
+    if (buffer.length < 48) {
+      throw new Error("Buffer too short to be a valid encrypted log.");
+    }
     const salt = buffer.subarray(4, 20);
     const iv = buffer.subarray(20, 32);
     const authTag = buffer.subarray(32, 48);
     const encrypted = buffer.subarray(48);
-    
-    const key = crypto.pbkdf2Sync(logPassword, salt, 100000, 32, "sha256");
+
+    const key = crypto.pbkdf2Sync(logPassword, salt, 600000, 32, "sha256");
     const decipher = crypto.createDecipheriv(ALGO, key, iv);
     decipher.setAuthTag(authTag);
-    return decipher.update(encrypted) + decipher.final("utf-8");
+    return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf-8");
   } catch (err) {
     throw new Error("Failed to decrypt log file. Incorrect password or corrupted file.");
   }
