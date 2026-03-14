@@ -140,6 +140,87 @@ function dumpError(error: unknown, depth = 0): void {
   }
 }
 
+// ── Summarize history ─────────────────────────────────────────────
+const SUMMARY_MODEL = process.env.SUMMARY_MODEL || "private/llama3-3-70b";
+const summaryEnclaveModel = SUMMARY_MODEL.startsWith("private/") ? SUMMARY_MODEL.slice("private/".length) : SUMMARY_MODEL;
+const summarySystemPrompt =
+  process.env.SUMMARY_SYSTEM_PROMPT ||
+  "You are a summarization assistant. Produce a concise but complete summary of the conversation below, preserving all important facts, decisions, and context. Write in third person.";
+const KEEP_RECENT = 10; // 5 user + 5 assistant
+
+interface SummarizeResult {
+  summary: string;
+  newMessages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
+  condensedCount: number;
+}
+
+async function summarizeHistory(
+  messages: Array<{ role: "system" | "user" | "assistant"; content: string }>
+): Promise<SummarizeResult | null> {
+  const conversation = messages.slice(1); // skip system prompt
+
+  if (conversation.length <= KEEP_RECENT) {
+    console.log(`\n   ℹ️  Not enough history to summarize (need more than ${KEEP_RECENT} messages).`);
+    return null;
+  }
+
+  const toSummarize = conversation.slice(0, conversation.length - KEEP_RECENT);
+  const toKeep = conversation.slice(conversation.length - KEEP_RECENT);
+
+  const summaryRequest = [
+    { role: "system" as const, content: summarySystemPrompt },
+    {
+      role: "user" as const,
+      content:
+        "Summarize the following conversation:\n\n" +
+        toSummarize
+          .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
+          .join("\n\n"),
+    },
+  ];
+
+  console.log(`\n⏳  Summarizing ${toSummarize.length} older messages via ${SUMMARY_MODEL}...`);
+
+  const endpoint = `${API_BASE}/private/v1/chat/completions`;
+  const body = JSON.stringify({
+    model: summaryEnclaveModel,
+    messages: summaryRequest,
+    temperature: 0.3,
+    max_tokens: 2000,
+  });
+
+  const response = await client.fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "X-Private-Model": SUMMARY_MODEL,
+      "x-query-source": "api",
+    },
+    body,
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`HTTP ${response.status}: ${errText}`);
+  }
+
+  const completion = await response.json();
+  const summary = completion.choices?.[0]?.message?.content ?? null;
+
+  if (!summary) throw new Error("No summary content received from model.");
+
+  return {
+    summary,
+    condensedCount: toSummarize.length,
+    newMessages: [
+      messages[0], // original system prompt
+      { role: "system" as const, content: `[Conversation summary up to this point]\n${summary.trim()}` },
+      ...toKeep,
+    ],
+  };
+}
+
 // ── Create the SecureClient ───────────────────────────────────────
 // ZERO-TRUST CONFIGURATION:
 //   - enclaveURL: The actual hardware enclave we encrypt for. The SDK will
@@ -244,7 +325,8 @@ async function main() {
   }
 
   console.log("💬  Encrypted chat started. Type your message below.");
-  console.log("   (Type 'exit' or 'quit' to end the session)\n");
+  console.log("   (Type 'exit' or 'quit' to end the session)");
+  console.log("   (Type '/summarize' to compress older history via llama3-3-70b)\n");
 
   while (true) {
     const input = await rl.question("You: ");
@@ -254,6 +336,36 @@ async function main() {
     if (trimmedInput.toLowerCase() === "exit" || trimmedInput.toLowerCase() === "quit") {
       console.log("\nClosing encrypted session. Goodbye!");
       break;
+    }
+
+    if (trimmedInput === "/summarize") {
+      try {
+        const result = await summarizeHistory(messages);
+        if (result) {
+          console.log("\n📝  Summary preview:\n");
+          console.log(result.summary.trim());
+          console.log("\n" + "─".repeat(50));
+          const answer = await rl.question("Apply summary and replace older history? [y/N]: ");
+          if (answer.trim().toLowerCase() === "y") {
+            messages = result.newMessages;
+            console.log(`✅  Condensed ${result.condensedCount} messages → 1 summary message.\n`);
+            writeLog({
+              timestamp: new Date().toISOString(),
+              model: SUMMARY_MODEL,
+              messages,
+              response: "[Summary applied]",
+              tokens: null,
+            });
+          } else {
+            console.log("   ↩️  Summarization cancelled. History unchanged.\n");
+          }
+        }
+      } catch (error: unknown) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        console.error(`\n❌  Summarization failed: ${errMsg}`);
+        if (verbose) dumpError(error);
+      }
+      continue;
     }
 
     // Add user message to history
